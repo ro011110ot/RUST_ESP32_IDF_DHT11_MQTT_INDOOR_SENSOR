@@ -22,6 +22,14 @@ To maximize battery life, this sensor is designed to operate in a low-power cycl
 4. **Deep Sleep:** The device enters deep sleep mode for **15 minutes**.
 5. **Reset:** After the timer expires, the ESP32 performs a full restart and repeats the cycle.
 
+### Reliability & Timing
+
+The DHT11 is sensitive to timing and power stability. This implementation ensures reliable data by:
+
+- **Warm-up Delay:** A 10-second stabilization window after boot.
+- **Retry Logic:** Up to 5 retries with a 2-second interval between attempts.
+- **Power Efficiency:** WiFi and MQTT services are only initialized if a valid sensor reading is obtained.
+
 ### Energy Consumption
 
 During deep sleep, the ESP32 consumes only a few microamps, making it suitable for long-term battery operation. Note
@@ -85,5 +93,6 @@ mqtt.rs: MQTT client setup and event handling.
 dht11.rs: Custom wrapper for the DHT11 sensor measurement.
 ```
 
-📝 License
+## 📝 License
+
 MIT License
