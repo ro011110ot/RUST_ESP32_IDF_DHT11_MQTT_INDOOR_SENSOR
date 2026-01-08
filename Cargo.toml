@@ -23,6 +23,7 @@ default = []
 experimental = ["esp-idf-svc/experimental"]
 
 [dependencies]
+chrono = "0.4"
 embedded-svc = "0.28" # Passend zu esp-idf-svc 0.51
 dht11 = "0.3.1"
 log = "0.4"

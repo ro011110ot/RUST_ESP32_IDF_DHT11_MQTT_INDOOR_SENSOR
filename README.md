@@ -11,6 +11,11 @@ reads temperature and humidity from a **DHT11** sensor and publishes the data vi
 - **Environment Aware**: Uses a `build.rs` script to inject sensitive credentials (SSID, MQTT) from a `.env` file at
   compile time.
 - **Optimized for ESP32**: Tailored for the Xtensa architecture with customized build profiles.
+- **NTP Synchronization**: Syncs internal clock on every boot.
+- **Interval-based Measurement**: Transmits data exactly at XX:00, XX:15, XX:30, and XX:45.
+- **Dynamic Deep Sleep**: Calculates the remaining time to the next 15-minute mark to ensure dashboard alignment.
+- **MQTT Integration**: Sends JSON payloads to a broker for database storage.
+-
 
 ### Power Management: Deep Sleep
 
