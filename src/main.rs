@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
             // but we ensure a healthy WiFi first.
 
             let mut measurement = None;
-            for i in 1..=5 {
+            for _i in 1..=5 {
                 if let Some((temp, hum)) = sensor.read_data() {
                     measurement = Some((temp, hum));
                     break;
