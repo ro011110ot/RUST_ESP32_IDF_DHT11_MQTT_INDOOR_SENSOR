@@ -21,9 +21,9 @@ fn main() -> anyhow::Result<()> {
     let timer_service = EspTaskTimerService::new()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    info!("Booting DHT11 Node with Auto-Reconnect...");
+    info!("Booting DHT11 Node with Enhanced Recovery...");
 
-    // 1. Initial WiFi & NTP Sync
+    // 1. Initial WiFi Setup
     let mut wifi = block_on(wifi::connect_wifi(
         peripherals,
         sys_loop.clone(),
@@ -31,6 +31,7 @@ fn main() -> anyhow::Result<()> {
         nvs,
     ))?;
 
+    // 2. NTP Sync
     let _sntp = EspSntp::new_default()?;
     while SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() < 1736340000 {
         info!("Waiting for NTP sync...");
@@ -38,45 +39,64 @@ fn main() -> anyhow::Result<()> {
     }
     info!("Time synchronized.");
 
+    // 3. Sensor & MQTT Initialization
     let dht_pin = PinDriver::input_output(unsafe { AnyIOPin::new(4) })?;
     let mut sensor = dht11::DhtSensor::new(dht_pin);
-
-    // Initial MQTT setup
     let mut mqtt_client = mqtt::create_mqtt_client()?;
 
-    let interval = 900;
+    let interval = 900; // 15 minutes
     let mut last_processed_slot = 0;
+    let mut reconnect_counter = 0;
+
+    info!("Entering main loop...");
 
     loop {
-        // --- CHECK WIFI STATUS ---
+        // --- WIFI RECOVERY LOGIC ---
         match wifi.is_up() {
             Ok(connected) => {
                 if !connected {
-                    warn!("WiFi connection lost! Attempting to reconnect...");
-                    let _ = wifi.connect(); // Non-blocking connect attempt
+                    reconnect_counter += 1;
+                    warn!("WiFi down (Attempt {}). Reconnecting...", reconnect_counter);
+
+                    if reconnect_counter > 20 {
+                        error!("WiFi recovery failed. Restarting chip...");
+                        esp_idf_svc::hal::reset::restart();
+                    } else if reconnect_counter % 5 == 0 {
+                        info!("Cycling WiFi stack...");
+                        let _ = wifi.stop();
+                        FreeRtos::delay_ms(1000);
+                        let _ = wifi.start();
+                    }
+
+                    let _ = wifi.connect();
                     FreeRtos::delay_ms(5000);
-                    continue; // Skip this loop iteration
+                    continue;
+                } else if reconnect_counter > 0 {
+                    info!("WiFi restored!");
+                    reconnect_counter = 0;
                 }
             }
-            Err(e) => error!("WiFi status check failed: {:?}", e),
+            Err(e) => error!("WiFi health check error: {:?}", e),
         }
 
+        // --- MEASUREMENT LOGIC ---
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let current_slot = now - (now % interval);
         let seconds_past_slot = now % interval;
 
+        // Check if we are in the first 60s of a new 15m interval
         if current_slot > last_processed_slot && seconds_past_slot < 60 {
-            info!("Interval reached! Checking MQTT and measuring...");
-
-            // If MQTT is disconnected, the client usually tries to reconnect internally,
-            // but we ensure a healthy WiFi first.
+            info!("Interval reached! Starting DHT11 measurement...");
 
             let mut measurement = None;
-            for _i in 1..=5 {
+            for i in 1..=5 {
+                // Here we use the 'sensor' and 'read_data()' that were flagged as unused
                 if let Some((temp, hum)) = sensor.read_data() {
+                    info!("Measurement success: {:.1}C, {:.1}% RH", temp, hum);
                     measurement = Some((temp, hum));
                     break;
                 }
+                warn!("Read attempt {} failed, retrying...", i);
                 FreeRtos::delay_ms(2000);
             }
 
@@ -85,14 +105,15 @@ fn main() -> anyhow::Result<()> {
                 let temp_payload = format!(r#"{{"id": "DHT11_Indoor", "Temp": {:.1}}}"#, temp);
                 let hum_payload = format!(r#"{{"id": "DHT11_Indoor", "Humidity": {:.1}}}"#, hum);
 
-                // Publish with confirmation
+                info!("Publishing to MQTT...");
+                // Here we use 'mqtt_client'
                 if let Err(e) = mqtt_client.publish(
                     &format!("{}/Temp", base_topic),
                     QoS::AtLeastOnce,
                     false,
                     temp_payload.as_bytes(),
                 ) {
-                    error!("Failed to publish Temperature: {:?}", e);
+                    error!("MQTT Temp publish error: {:?}", e);
                 }
                 if let Err(e) = mqtt_client.publish(
                     &format!("{}/Humidity", base_topic),
@@ -100,7 +121,7 @@ fn main() -> anyhow::Result<()> {
                     false,
                     hum_payload.as_bytes(),
                 ) {
-                    error!("Failed to publish Humidity: {:?}", e);
+                    error!("MQTT Hum publish error: {:?}", e);
                 }
 
                 FreeRtos::delay_ms(5000);
