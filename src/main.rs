@@ -9,8 +9,8 @@ use esp_idf_svc::hal::task::block_on;
 use esp_idf_svc::mqtt::client::QoS;
 use esp_idf_svc::timer::EspTaskTimerService;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, nvs::EspDefaultNvsPartition};
-use log::{error, info};
 use esp_idf_sys::{esp_deep_sleep_start, esp_sleep_enable_timer_wakeup};
+use log::{error, info};
 
 fn main() -> anyhow::Result<()> {
     // Required for the ESP-IDF framework
@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     // Deep sleep duration: 15 minutes (900 seconds)
     const SLEEP_TIME_SECONDS: u64 = 900;
 
-    // Establish WiFi connection
+    // Establish Wi-Fi connection
     let _wifi = block_on(wifi::connect_wifi(
         peripherals,
         sys_loop,
@@ -62,12 +62,8 @@ fn main() -> anyhow::Result<()> {
 
             info!("Publishing to MQTT: {} / {}", temp_topic, hum_topic);
 
-            let _ = mqtt_client.publish(
-                &temp_topic,
-                QoS::AtMostOnce,
-                false,
-                temp_payload.as_bytes(),
-            );
+            let _ =
+                mqtt_client.publish(&temp_topic, QoS::AtMostOnce, false, temp_payload.as_bytes());
             let _ = mqtt_client.publish(&hum_topic, QoS::AtMostOnce, false, hum_payload.as_bytes());
 
             success = true;
@@ -75,7 +71,10 @@ fn main() -> anyhow::Result<()> {
         } else {
             retries -= 1;
             if retries > 0 {
-                error!("DHT11 Error: Timeout. Retrying in 2s... ({} attempts left)", retries);
+                error!(
+                    "DHT11 Error: Timeout. Retrying in 2s... ({} attempts left)",
+                    retries
+                );
                 FreeRtos::delay_ms(2000);
             } else {
                 error!("DHT11 Final Error: Sensor not responding.");

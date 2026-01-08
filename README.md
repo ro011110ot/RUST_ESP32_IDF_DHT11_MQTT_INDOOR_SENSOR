@@ -5,7 +5,7 @@ reads temperature and humidity from a **DHT11** sensor and publishes the data vi
 
 ## 🚀 Features
 
-- **Async WiFi Stack**: Reliable connection handling using `esp-idf-svc`'s asynchronous WiFi.
+- **Async Wi-Fi Stack**: Reliable connection handling using `esp-idf-svc`'s asynchronous Wi-Fi.
 - **MQTT Publishing**: Transmits sensor data as JSON payloads for easy integration with Home Assistant or Node-RED.
 - **Robust Sensor Logic**: Implementation of the DHT11 protocol with automatic retries and error logging.
 - **Environment Aware**: Uses a `build.rs` script to inject sensitive credentials (SSID, MQTT) from a `.env` file at
@@ -16,7 +16,7 @@ reads temperature and humidity from a **DHT11** sensor and publishes the data vi
 
 To maximize battery life, this sensor is designed to operate in a low-power cycle:
 
-1. **Wake-up:** The ESP32 boots and connects to WiFi.
+1. **Wake-up:** The ESP32 boots and connects to Wi-Fi.
 2. **Measurement:** The system reads data from the DHT11 sensor (with up to 3 retries).
 3. **Transmission:** Data is published to the MQTT broker in JSON format.
 4. **Deep Sleep:** The device enters deep sleep mode for **15 minutes**.
