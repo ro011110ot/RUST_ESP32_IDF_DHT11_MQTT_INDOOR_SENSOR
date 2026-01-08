@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
     let timer_service = EspTaskTimerService::new()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    info!("Booting DHT11 Node with Enhanced Recovery...");
+    info!("Booting DHT11 Indoor Node (Enhanced Recovery & Slot-Locking)...");
 
     // 1. Initial WiFi Setup
     let mut wifi = block_on(wifi::connect_wifi(
@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
         nvs,
     ))?;
 
-    // 2. NTP Sync
+    // 2. NTP Sync (Required for interval logic)
     let _sntp = EspSntp::new_default()?;
     while SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() < 1736340000 {
         info!("Waiting for NTP sync...");
@@ -79,56 +79,64 @@ fn main() -> anyhow::Result<()> {
             Err(e) => error!("WiFi health check error: {:?}", e),
         }
 
-        // --- MEASUREMENT LOGIC ---
+        // --- MEASUREMENT LOGIC WITH SLOT-LOCKING ---
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let current_slot = now - (now % interval);
         let seconds_past_slot = now % interval;
 
-        // Check if we are in the first 60s of a new 15m interval
-        if current_slot > last_processed_slot && seconds_past_slot < 60 {
-            info!("Interval reached! Starting DHT11 measurement...");
+        // Check if we entered a NEW 15-minute slot
+        if current_slot > last_processed_slot {
+            // Only attempt measurement within the first 60 seconds of the slot
+            if seconds_past_slot < 60 {
+                info!("Interval reached! Starting DHT11 measurement cycle...");
 
-            let mut measurement = None;
-            for i in 1..=5 {
-                // Here we use the 'sensor' and 'read_data()' that were flagged as unused
-                if let Some((temp, hum)) = sensor.read_data() {
-                    info!("Measurement success: {:.1}C, {:.1}% RH", temp, hum);
-                    measurement = Some((temp, hum));
-                    break;
+                let mut measurement = None;
+                for i in 1..=5 {
+                    if let Some((temp, hum)) = sensor.read_data() {
+                        info!("Measurement success: {:.1}C, {:.1}% RH", temp, hum);
+                        measurement = Some((temp, hum));
+                        break;
+                    }
+                    warn!("Read attempt {} failed, retrying in 2s...", i);
+                    FreeRtos::delay_ms(2000);
                 }
-                warn!("Read attempt {} failed, retrying...", i);
-                FreeRtos::delay_ms(2000);
+
+                if let Some((temp, hum)) = measurement {
+                    let base_topic = env!("MQTT_TOPIC");
+                    let temp_payload = format!(r#"{{"id": "DHT11_Indoor", "Temp": {:.1}}}"#, temp);
+                    let hum_payload =
+                        format!(r#"{{"id": "DHT11_Indoor", "Humidity": {:.1}}}"#, hum);
+
+                    info!("Publishing to MQTT...");
+                    if let Err(e) = mqtt_client.publish(
+                        &format!("{}/Temp", base_topic),
+                        QoS::AtLeastOnce,
+                        false,
+                        temp_payload.as_bytes(),
+                    ) {
+                        error!("MQTT Temp publish error: {:?}", e);
+                    }
+                    if let Err(e) = mqtt_client.publish(
+                        &format!("{}/Humidity", base_topic),
+                        QoS::AtLeastOnce,
+                        false,
+                        hum_payload.as_bytes(),
+                    ) {
+                        error!("MQTT Hum publish error: {:?}", e);
+                    }
+
+                    // Small delay to ensure MQTT buffers are cleared
+                    FreeRtos::delay_ms(2000);
+                } else {
+                    error!("Failed to get valid sensor data in this interval.");
+                }
+
+                // CRITICAL: Mark this slot as processed to prevent re-entry 1s later
+                last_processed_slot = current_slot;
             }
-
-            if let Some((temp, hum)) = measurement {
-                let base_topic = env!("MQTT_TOPIC");
-                let temp_payload = format!(r#"{{"id": "DHT11_Indoor", "Temp": {:.1}}}"#, temp);
-                let hum_payload = format!(r#"{{"id": "DHT11_Indoor", "Humidity": {:.1}}}"#, hum);
-
-                info!("Publishing to MQTT...");
-                // Here we use 'mqtt_client'
-                if let Err(e) = mqtt_client.publish(
-                    &format!("{}/Temp", base_topic),
-                    QoS::AtLeastOnce,
-                    false,
-                    temp_payload.as_bytes(),
-                ) {
-                    error!("MQTT Temp publish error: {:?}", e);
-                }
-                if let Err(e) = mqtt_client.publish(
-                    &format!("{}/Humidity", base_topic),
-                    QoS::AtLeastOnce,
-                    false,
-                    hum_payload.as_bytes(),
-                ) {
-                    error!("MQTT Hum publish error: {:?}", e);
-                }
-
-                FreeRtos::delay_ms(5000);
-            }
-            last_processed_slot = current_slot;
         }
 
+        // Prevent CPU starvation (1Hz check rate)
         FreeRtos::delay_ms(1000);
     }
 }

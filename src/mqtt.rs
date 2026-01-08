@@ -7,11 +7,11 @@ pub fn create_mqtt_client() -> anyhow::Result<EspMqttClient<'static>> {
     let url = env!("MQTT_BROKER");
     let user = env!("MQTT_USER");
     let pass = env!("MQTT_PASS");
-
+    let client_id = env!("MQTT_CLIENT_ID");
     info!("Connecting to MQTT broker (Unencrypted): {}", url);
 
     let mqtt_config = MqttClientConfiguration {
-        client_id: Some("esp32_sensor_node"),
+        client_id: Some(client_id),
         username: Some(user),
         password: Some(pass),
         keep_alive_interval: Some(Duration::from_secs(60)),
