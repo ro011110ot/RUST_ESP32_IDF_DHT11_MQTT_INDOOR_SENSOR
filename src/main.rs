@@ -21,59 +21,62 @@ fn main() -> anyhow::Result<()> {
     let timer_service = EspTaskTimerService::new()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    info!("Booting DHT11 Node in Continuous Mode...");
+    info!("Booting DHT11 Node with Auto-Reconnect...");
 
-    // 1. WiFi & NTP Sync
-    info!("Initializing WiFi...");
-    let _wifi = block_on(wifi::connect_wifi(
+    // 1. Initial WiFi & NTP Sync
+    let mut wifi = block_on(wifi::connect_wifi(
         peripherals,
-        sys_loop,
-        timer_service,
+        sys_loop.clone(),
+        timer_service.clone(),
         nvs,
     ))?;
 
-    info!("Syncing time via NTP...");
     let _sntp = EspSntp::new_default()?;
-
-    // Wait for valid NTP time (threshold: Jan 2026)
     while SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() < 1736340000 {
         info!("Waiting for NTP sync...");
         FreeRtos::delay_ms(2000);
     }
     info!("Time synchronized.");
 
-    // Initialize Sensor
     let dht_pin = PinDriver::input_output(unsafe { AnyIOPin::new(4) })?;
     let mut sensor = dht11::DhtSensor::new(dht_pin);
 
-    // Persistent MQTT Connection
+    // Initial MQTT setup
     let mut mqtt_client = mqtt::create_mqtt_client()?;
 
-    let interval = 900; // 15 minutes
+    let interval = 900;
     let mut last_processed_slot = 0;
 
-    info!("Entering main loop...");
-
     loop {
+        // --- CHECK WIFI STATUS ---
+        match wifi.is_up() {
+            Ok(connected) => {
+                if !connected {
+                    warn!("WiFi connection lost! Attempting to reconnect...");
+                    let _ = wifi.connect(); // Non-blocking connect attempt
+                    FreeRtos::delay_ms(5000);
+                    continue; // Skip this loop iteration
+                }
+            }
+            Err(e) => error!("WiFi status check failed: {:?}", e),
+        }
+
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let current_slot = now - (now % interval);
         let seconds_past_slot = now % interval;
 
-        // Trigger measurement in the first 60s of the 15m interval
         if current_slot > last_processed_slot && seconds_past_slot < 60 {
-            info!("Interval reached! Starting DHT11 measurement...");
+            info!("Interval reached! Checking MQTT and measuring...");
+
+            // If MQTT is disconnected, the client usually tries to reconnect internally,
+            // but we ensure a healthy WiFi first.
 
             let mut measurement = None;
             for i in 1..=5 {
                 if let Some((temp, hum)) = sensor.read_data() {
-                    info!(
-                        "Read success on attempt {}: {:.1}C, {:.1}% RH",
-                        i, temp, hum
-                    );
                     measurement = Some((temp, hum));
                     break;
                 }
-                warn!("Read attempt {} failed, retrying...", i);
                 FreeRtos::delay_ms(2000);
             }
 
@@ -82,27 +85,26 @@ fn main() -> anyhow::Result<()> {
                 let temp_payload = format!(r#"{{"id": "DHT11_Indoor", "Temp": {:.1}}}"#, temp);
                 let hum_payload = format!(r#"{{"id": "DHT11_Indoor", "Humidity": {:.1}}}"#, hum);
 
-                info!("Publishing data with QoS 1...");
-                let _ = mqtt_client.publish(
+                // Publish with confirmation
+                if let Err(e) = mqtt_client.publish(
                     &format!("{}/Temp", base_topic),
                     QoS::AtLeastOnce,
                     false,
                     temp_payload.as_bytes(),
-                );
-                let _ = mqtt_client.publish(
+                ) {
+                    error!("Failed to publish Temperature: {:?}", e);
+                }
+                if let Err(e) = mqtt_client.publish(
                     &format!("{}/Humidity", base_topic),
                     QoS::AtLeastOnce,
                     false,
                     hum_payload.as_bytes(),
-                );
+                ) {
+                    error!("Failed to publish Humidity: {:?}", e);
+                }
 
-                // Allow network stack time to process ACKs
                 FreeRtos::delay_ms(5000);
-                info!("Transmission successful.");
-            } else {
-                error!("Failed to read from DHT11 after 5 attempts.");
             }
-
             last_processed_slot = current_slot;
         }
 
