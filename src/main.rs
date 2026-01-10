@@ -3,7 +3,7 @@ mod mqtt;
 mod wifi;
 
 use esp_idf_svc::hal::delay::FreeRtos;
-use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver};
+use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver, Pull};
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::hal::task::block_on;
 use esp_idf_svc::mqtt::client::QoS;
@@ -21,122 +21,94 @@ fn main() -> anyhow::Result<()> {
     let timer_service = EspTaskTimerService::new()?;
     let nvs = EspDefaultNvsPartition::take()?;
 
-    info!("Booting DHT11 Indoor Node (Enhanced Recovery & Slot-Locking)...");
+    info!("Booting DHT11 Indoor Node (MariaDB Compatibility Mode)...");
 
-    // 1. Initial WiFi Setup
-    let mut wifi = block_on(wifi::connect_wifi(
-        peripherals,
+    // 1. DHT11 Pin Initialization & Stabilization
+    let pin4: AnyIOPin = peripherals.pins.gpio4.into();
+    let mut dht_pin = PinDriver::input_output(pin4)?;
+    dht_pin.set_pull(Pull::Up)?;
+    dht_pin.set_high()?;
+
+    info!("Waiting for DHT11 stabilization...");
+    FreeRtos::delay_ms(2000);
+    let mut dht_sensor = dht11::DhtSensor::new(dht_pin);
+
+    // 2. WiFi Setup (Modem Only to avoid ownership issues)
+    let _wifi = block_on(wifi::connect_wifi(
+        peripherals.modem,
         sys_loop.clone(),
         timer_service.clone(),
         nvs,
     ))?;
 
-    // 2. NTP Sync (Required for interval logic)
+    // 3. NTP Sync
     let _sntp = EspSntp::new_default()?;
-    while SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() < 1736340000 {
-        info!("Waiting for NTP sync...");
-        FreeRtos::delay_ms(2000);
+    info!("Waiting for NTP sync...");
+    while SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() < 1600000000 {
+        FreeRtos::delay_ms(1000);
     }
     info!("Time synchronized.");
 
-    // 3. Sensor & MQTT Initialization
-    let dht_pin = PinDriver::input_output(unsafe { AnyIOPin::new(4) })?;
-    let mut sensor = dht11::DhtSensor::new(dht_pin);
+    // 4. MQTT Client Setup
     let mut mqtt_client = mqtt::create_mqtt_client()?;
-
-    let interval = 900; // 15 minutes
     let mut last_processed_slot = 0;
-    let mut reconnect_counter = 0;
 
-    info!("Entering main loop...");
+    info!("Entering main loop (15min intervals: 00, 15, 30, 45)...");
 
     loop {
-        // --- WIFI RECOVERY LOGIC ---
-        match wifi.is_up() {
-            Ok(connected) => {
-                if !connected {
-                    reconnect_counter += 1;
-                    warn!("WiFi down (Attempt {}). Reconnecting...", reconnect_counter);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
+        let current_secs = now.as_secs();
 
-                    if reconnect_counter > 20 {
-                        error!("WiFi recovery failed. Restarting chip...");
-                        esp_idf_svc::hal::reset::restart();
-                    } else if reconnect_counter % 5 == 0 {
-                        info!("Cycling WiFi stack...");
-                        let _ = wifi.stop();
-                        FreeRtos::delay_ms(1000);
-                        let _ = wifi.start();
-                    }
+        // Check for 15-minute alignment (900 seconds)
+        if current_secs % 900 == 0 {
+            let current_slot = current_secs / 900;
 
-                    let _ = wifi.connect();
-                    FreeRtos::delay_ms(5000);
-                    continue;
-                } else if reconnect_counter > 0 {
-                    info!("WiFi restored!");
-                    reconnect_counter = 0;
-                }
-            }
-            Err(e) => error!("WiFi health check error: {:?}", e),
-        }
-
-        // --- MEASUREMENT LOGIC WITH SLOT-LOCKING ---
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        let current_slot = now - (now % interval);
-        let seconds_past_slot = now % interval;
-
-        // Check if we entered a NEW 15-minute slot
-        if current_slot > last_processed_slot {
-            // Only attempt measurement within the first 60 seconds of the slot
-            if seconds_past_slot < 60 {
-                info!("Interval reached! Starting DHT11 measurement cycle...");
+            if current_slot != last_processed_slot {
+                let minute = (current_secs / 60) % 60;
+                info!("Interval triggered (Minute {:02})!", minute);
 
                 let mut measurement = None;
-                for i in 1..=5 {
-                    if let Some((temp, hum)) = sensor.read_data() {
-                        info!("Measurement success: {:.1}C, {:.1}% RH", temp, hum);
-                        measurement = Some((temp, hum));
+                for attempt in 1..=5 {
+                    if let Some(data) = dht_sensor.read_data() {
+                        measurement = Some(data);
                         break;
                     }
-                    warn!("Read attempt {} failed, retrying in 2s...", i);
+                    warn!("Read attempt {} failed, retrying...", attempt);
                     FreeRtos::delay_ms(2000);
                 }
 
                 if let Some((temp, hum)) = measurement {
+                    info!("Measurement: {:.1}C, {:.1}%", temp, hum);
                     let base_topic = env!("MQTT_TOPIC");
+
+                    // JSON Payloads with original IDs and Keys for MariaDB
                     let temp_payload = format!(r#"{{"id": "DHT11_Indoor", "Temp": {:.1}}}"#, temp);
                     let hum_payload =
                         format!(r#"{{"id": "DHT11_Indoor", "Humidity": {:.1}}}"#, hum);
 
-                    info!("Publishing to MQTT...");
-                    if let Err(e) = mqtt_client.publish(
+                    let _ = mqtt_client.publish(
                         &format!("{}/Temp", base_topic),
                         QoS::AtLeastOnce,
                         false,
                         temp_payload.as_bytes(),
-                    ) {
-                        error!("MQTT Temp publish error: {:?}", e);
-                    }
-                    if let Err(e) = mqtt_client.publish(
+                    );
+
+                    let _ = mqtt_client.publish(
                         &format!("{}/Humidity", base_topic),
                         QoS::AtLeastOnce,
                         false,
                         hum_payload.as_bytes(),
-                    ) {
-                        error!("MQTT Hum publish error: {:?}", e);
-                    }
+                    );
 
-                    // Small delay to ensure MQTT buffers are cleared
-                    FreeRtos::delay_ms(2000);
+                    info!("Data published to MariaDB via MQTT.");
                 } else {
-                    error!("Failed to get valid sensor data in this interval.");
+                    error!("Failed to get valid data after 5 retries.");
                 }
 
-                // CRITICAL: Mark this slot as processed to prevent re-entry 1s later
                 last_processed_slot = current_slot;
             }
         }
 
-        // Prevent CPU starvation (1Hz check rate)
         FreeRtos::delay_ms(1000);
     }
 }

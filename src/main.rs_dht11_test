@@ -1,0 +1,45 @@
+mod dht11;
+
+use esp_idf_svc::hal::delay::FreeRtos;
+use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver, Pull};
+use esp_idf_svc::hal::peripherals::Peripherals;
+use log::{error, info};
+
+fn main() -> anyhow::Result<()> {
+    esp_idf_svc::sys::link_patches();
+    esp_idf_svc::log::EspLogger::initialize_default();
+
+    let peripherals = Peripherals::take()?;
+    info!("DHT11 Minimal Test Mode (No WiFi/MQTT)");
+
+    // SCHRITT 1: Konvertiere den konkreten Gpio4 in den generischen AnyIOPin
+    let pin4: AnyIOPin = peripherals.pins.gpio4.into();
+
+    // SCHRITT 2: Erstelle den PinDriver mit dem generischen Pin
+    let mut dht_pin = PinDriver::input_output(pin4)?;
+
+    // Konfiguration
+    dht_pin.set_pull(Pull::Up)?;
+    dht_pin.set_high()?;
+
+    FreeRtos::delay_ms(2000);
+
+    // Jetzt passt der Typ exakt zu dht11::DhtSensor::new
+    let mut dht_sensor = dht11::DhtSensor::new(dht_pin);
+
+    loop {
+        info!("Starting measurement...");
+
+        match dht_sensor.read_data() {
+            Some((temp, hum)) => {
+                info!("SUCCESS! Temp: {:.1}C, Humidity: {:.1}%", temp, hum);
+            }
+            None => {
+                error!("STILL TIMEOUT: Sensor does not respond.");
+            }
+        }
+
+        info!("Waiting 5 seconds for next try...");
+        FreeRtos::delay_ms(5000);
+    }
+}
