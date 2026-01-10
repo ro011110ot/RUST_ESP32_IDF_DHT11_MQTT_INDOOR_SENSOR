@@ -7,22 +7,22 @@ pub struct DhtSensor<'a> {
 }
 
 impl<'a> DhtSensor<'a> {
-    /// Creates a new instance of the DHT11 sensor
     pub fn new(pin: PinDriver<'a, AnyIOPin, InputOutput>) -> Self {
         Self {
             device: Dht11::new(pin),
         }
     }
 
-    /// Performs a measurement and returns (temperature, humidity)
     pub fn read_data(&mut self) -> Option<(f32, f32)> {
         let mut delay = Ets;
 
+        // Give the sensor a tiny bit of breath before starting the handshake
+        esp_idf_svc::hal::delay::FreeRtos::delay_ms(10);
+
         match self.device.perform_measurement(&mut delay) {
             Ok(measurement) => {
-                // Convert raw sensor values to floating point numbers.
-                // Note: Depending on the specific DHT11 crate version,
-                // raw values might need to be divided by 10.0 to get the correct decimal value.
+                // DHT11 library usually returns 10x the value for integers
+                // If your values were 215 instead of 21.5, the / 10.0 is correct.
                 let temp = measurement.temperature as f32 / 10.0;
                 let hum = measurement.humidity as f32 / 10.0;
 
