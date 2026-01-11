@@ -2,6 +2,7 @@ use core::convert::TryInto;
 use embedded_svc::wifi::{AuthMethod, ClientConfiguration, Configuration};
 use esp_idf_svc::hal::delay::FreeRtos;
 use esp_idf_svc::hal::modem::Modem;
+use esp_idf_svc::sys::{esp_wifi_set_ps, wifi_ps_type_t_WIFI_PS_NONE};
 use esp_idf_svc::timer::EspTaskTimerService;
 use esp_idf_svc::wifi::{AsyncWifi, EspWifi};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, nvs::EspDefaultNvsPartition};
@@ -32,6 +33,10 @@ pub async fn connect_wifi(
 
     info!("Starting Wi-Fi...");
     wifi.start().await?;
+    unsafe {
+        esp_wifi_set_ps(wifi_ps_type_t_WIFI_PS_NONE);
+    }
+    info!("Wi-Fi Power Management disabled for stable sensor timing.");
 
     let mut attempts = 0;
     loop {

@@ -44,8 +44,9 @@ fn main() -> anyhow::Result<()> {
     // 3. NTP Sync - Required for interval timing
     let _sntp = EspSntp::new_default()?;
     info!("Waiting for NTP sync...");
+    info!("Waiting for DHT11 stabilization...");
     while SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() < 1600000000 {
-        FreeRtos::delay_ms(1000);
+        FreeRtos::delay_ms(5000);
     }
     info!("Time synchronized.");
 
@@ -70,13 +71,13 @@ fn main() -> anyhow::Result<()> {
                 let mut measurement = None;
 
                 // Attempt sensor read with 5 retries
-                for attempt in 1..=5 {
+                for attempt in 1..=10 {
                     if let Some(data) = dht_sensor.read_data() {
                         measurement = Some(data);
                         break;
                     }
                     warn!("Read attempt {} failed, retrying in 3s...", attempt);
-                    FreeRtos::delay_ms(3000);
+                    FreeRtos::delay_ms(5000);
                 }
 
                 if let Some((temp, hum)) = measurement {
