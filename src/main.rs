@@ -6,7 +6,7 @@ use esp_idf_svc::hal::delay::FreeRtos;
 use esp_idf_svc::hal::gpio::{AnyIOPin, PinDriver, Pull};
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::hal::task::block_on;
-use esp_idf_svc::mqtt::client::QoS; // Nutzt QoS wieder
+use esp_idf_svc::mqtt::client::QoS;
 use esp_idf_svc::timer::EspTaskTimerService;
 use esp_idf_svc::{eventloop::EspSystemEventLoop, nvs::EspDefaultNvsPartition, sntp::EspSntp};
 use log::{error, info, warn};
@@ -33,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     FreeRtos::delay_ms(2000);
     let mut dht_sensor = dht11::DhtSensor::new(dht_pin);
 
-    // 2. WiFi Setup
+    // 2. Wi-Fi Setup
     let _wifi = block_on(wifi::connect_wifi(
         peripherals.modem,
         sys_loop.clone(),
@@ -41,7 +41,7 @@ fn main() -> anyhow::Result<()> {
         nvs,
     ))?;
 
-    // 3. NTP Sync
+    // 3. NTP Sync - Required for interval timing
     let _sntp = EspSntp::new_default()?;
     info!("Waiting for NTP sync...");
     while SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() < 1600000000 {
@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
         let current_secs = now.as_secs();
 
-        // 15-Minuten Intervall (900s)
+        // 15-minute interval logic (900 seconds)
         if current_secs % 900 == 0 {
             let current_slot = current_secs / 900;
 
@@ -69,7 +69,7 @@ fn main() -> anyhow::Result<()> {
 
                 let mut measurement = None;
 
-                // Wir versuchen die Messung mit etwas mehr Geduld
+                // Attempt sensor read with 5 retries
                 for attempt in 1..=5 {
                     if let Some(data) = dht_sensor.read_data() {
                         measurement = Some(data);
@@ -83,16 +83,15 @@ fn main() -> anyhow::Result<()> {
                     info!("Measurement successful: {:.1}C, {:.1}%", temp, hum);
                     let base_topic = env!("MQTT_TOPIC");
 
-                    let temp_payload = format!(r#"{{"id": "DHT11_Indoor", "Temp": {:.1}}}"#, temp);
-                    let hum_payload =
-                        format!(r#"{{"id": "DHT11_Indoor", "Humidity": {:.1}}}"#, hum);
+                    let t_pay = format!(r#"{{"id": "DHT11_Indoor", "Temp": {:.1}}}"#, temp);
+                    let h_pay = format!(r#"{{"id": "DHT11_Indoor", "Humidity": {:.1}}}"#, hum);
 
-                    // MQTT Publish Logik (Beseitigt die Warnungen)
+                    // MQTT Publish with Retain flag for instant UI updates
                     if let Err(e) = mqtt_client.publish(
                         &format!("{}/Temp", base_topic),
                         QoS::AtLeastOnce,
-                        false,
-                        temp_payload.as_bytes(),
+                        true,
+                        t_pay.as_bytes(),
                     ) {
                         error!("Failed to publish temperature: {:?}", e);
                     }
@@ -100,21 +99,21 @@ fn main() -> anyhow::Result<()> {
                     if let Err(e) = mqtt_client.publish(
                         &format!("{}/Humidity", base_topic),
                         QoS::AtLeastOnce,
-                        false,
-                        hum_payload.as_bytes(),
+                        true,
+                        h_pay.as_bytes(),
                     ) {
                         error!("Failed to publish humidity: {:?}", e);
                     }
 
-                    info!("Data sent to MariaDB.");
+                    info!("Data sent successfully.");
                 } else {
-                    error!("Failed to get valid data after 5 retries.");
+                    error!("Failed to get valid data after multiple retries.");
                 }
 
                 last_processed_slot = current_slot;
             }
         }
 
-        FreeRtos::delay_ms(1000);
+        FreeRtos::delay_ms(1000); // Prevent CPU starvation
     }
 }
